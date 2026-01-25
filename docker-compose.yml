@@ -1,0 +1,64 @@
+# OpenCTI AssemblyLine Import Connector - Docker Compose
+# 
+# This file can be used for standalone deployment or integrated into
+# your existing OpenCTI docker-compose.yml
+#
+# Usage:
+#   1. Copy .env.example to .env and configure
+#   2. docker-compose up -d
+
+version: '3.8'
+
+services:
+  connector-assemblyline-import:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: opencti/connector-assemblyline-import:latest
+    container_name: connector-assemblyline-import
+    environment:
+      # OpenCTI Connection
+      - OPENCTI_URL=${OPENCTI_URL}
+      - OPENCTI_TOKEN=${OPENCTI_TOKEN}
+      
+      # Connector Settings
+      - CONNECTOR_ID=${ASSEMBLYLINE_IMPORT_CONNECTOR_ID}
+      - CONNECTOR_TYPE=${CONNECTOR_TYPE:-EXTERNAL_IMPORT}
+      - CONNECTOR_NAME=${CONNECTOR_NAME:-AssemblyLine Import}
+      - CONNECTOR_SCOPE=${CONNECTOR_SCOPE:-assemblyline}
+      - CONNECTOR_AUTO=${CONNECTOR_AUTO:-true}
+      - CONNECTOR_CONFIDENCE_LEVEL=${CONNECTOR_CONFIDENCE_LEVEL:-80}
+      - CONNECTOR_LOG_LEVEL=${CONNECTOR_LOG_LEVEL:-info}
+      
+      # AssemblyLine Connection
+      - ASSEMBLYLINE_URL=${ASSEMBLYLINE_URL}
+      - ASSEMBLYLINE_USER=${ASSEMBLYLINE_USER}
+      - ASSEMBLYLINE_APIKEY=${ASSEMBLYLINE_APIKEY}
+      - ASSEMBLYLINE_VERIFY_SSL=${ASSEMBLYLINE_VERIFY_SSL:-false}
+      
+      # Import Settings
+      - ASSEMBLYLINE_IMPORT_INTERVAL=${ASSEMBLYLINE_IMPORT_INTERVAL:-240}
+      - ASSEMBLYLINE_LOOKBACK_DAYS=${ASSEMBLYLINE_LOOKBACK_DAYS:-1}
+      - ASSEMBLYLINE_TLP_LEVEL=${ASSEMBLYLINE_TLP_LEVEL:-TLP:AMBER}
+      - ASSEMBLYLINE_INCLUDE_SUSPICIOUS=${ASSEMBLYLINE_INCLUDE_SUSPICIOUS:-false}
+      
+      # Feature Toggles
+      - ASSEMBLYLINE_CREATE_NETWORK_INDICATORS=${ASSEMBLYLINE_CREATE_NETWORK_INDICATORS:-true}
+      - ASSEMBLYLINE_CREATE_OBSERVABLES=${ASSEMBLYLINE_CREATE_OBSERVABLES:-true}
+      - ASSEMBLYLINE_CREATE_MALWARE_ANALYSIS=${ASSEMBLYLINE_CREATE_MALWARE_ANALYSIS:-true}
+      - ASSEMBLYLINE_CREATE_MALWARE_ENTITIES=${ASSEMBLYLINE_CREATE_MALWARE_ENTITIES:-true}
+      - ASSEMBLYLINE_CREATE_ATTACK_PATTERNS=${ASSEMBLYLINE_CREATE_ATTACK_PATTERNS:-true}
+      - ASSEMBLYLINE_CREATE_AS_ARTIFACT=${ASSEMBLYLINE_CREATE_AS_ARTIFACT:-true}
+    
+    restart: always
+    
+    # Uncomment if integrating with existing OpenCTI stack
+    # depends_on:
+    #   - opencti
+    # networks:
+    #   - opencti
+
+# Uncomment if integrating with existing OpenCTI stack
+# networks:
+#   opencti:
+#     external: true

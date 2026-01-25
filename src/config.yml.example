@@ -1,0 +1,39 @@
+# OpenCTI AssemblyLine Import Connector Configuration
+# Copy this file to config.yml and update with your settings
+
+opencti:
+  url: 'http://opencti:8080'
+  token: 'ChangeMe'  # Your OpenCTI API token
+
+connector:
+  id: 'ChangeMe'  # Unique UUID v4 for this connector
+  type: 'EXTERNAL_IMPORT'
+  name: 'AssemblyLine Import'
+  scope: 'assemblyline'
+  auto: true
+  confidence_level: 80  # Confidence level for created objects (0-100)
+  log_level: 'info'  # debug, info, warning, error
+  run_and_terminate: false  # Set to true for single execution mode
+
+assemblyline_import:
+  # AssemblyLine connection settings
+  assemblyline_url: 'https://your-assemblyline-instance'
+  assemblyline_user: 'opencti-connector'
+  assemblyline_apikey: 'your-api-key'
+  assemblyline_verify_ssl: false  # Set to true if using valid SSL certificates
+
+  # Import settings
+  interval: 240  # Interval between imports in seconds
+  lookback_days: 1  # How many days back to search for submissions
+  tlp_level: 'TLP:AMBER'  # TLP marking: TLP:RED, TLP:AMBER, TLP:GREEN, TLP:WHITE, TLP:CLEAR
+  include_suspicious: false  # Include suspicious IOCs in addition to malicious
+
+assemblyline:
+  # Feature toggles - enable/disable specific features
+  create_network_indicators: true  # Create indicators for domains, IPs, URLs
+  create_observables: true  # Create observables with based-on relationships
+  create_malware_analysis: true  # Create Malware Analysis objects (visible in dedicated section)
+  create_malware_entities: true  # Create Malware family entities
+  create_attack_patterns: true  # Create MITRE ATT&CK patterns
+  create_as_artifact: true  # Create files as Artifacts (false = StixFile)
+  create_hash_observables: true  # Create hash observables
