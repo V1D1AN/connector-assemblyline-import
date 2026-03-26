@@ -561,7 +561,7 @@ class AssemblyLineImportConnector:
                 created_counts['unclassified_domains'] += 1
 
                 self.helper.api.stix_cyber_observable.add_label(
-                    id=obs["id"], label="assemblyline-unverified"
+                    id=obs["id"], label_name="assemblyline-unverified"
                 )
                 self.helper.api.stix_core_relationship.create(
                     fromId=file_id, toId=obs["id"],
@@ -582,7 +582,7 @@ class AssemblyLineImportConnector:
                 created_counts['unclassified_urls'] += 1
 
                 self.helper.api.stix_cyber_observable.add_label(
-                    id=obs["id"], label="assemblyline-unverified"
+                    id=obs["id"], label_name="assemblyline-unverified"
                 )
                 self.helper.api.stix_core_relationship.create(
                     fromId=file_id, toId=obs["id"],
@@ -603,7 +603,7 @@ class AssemblyLineImportConnector:
                 created_counts['unclassified_emails'] += 1
 
                 self.helper.api.stix_cyber_observable.add_label(
-                    id=obs["id"], label="assemblyline-unverified"
+                    id=obs["id"], label_name="assemblyline-unverified"
                 )
                 self.helper.api.stix_core_relationship.create(
                     fromId=file_id, toId=obs["id"],
@@ -964,6 +964,16 @@ class AssemblyLineImportConnector:
                         if isinstance(ts, str):
                             if "." not in ts:
                                 ts = ts.replace("Z", ".000Z")
+                            else:
+                                # Truncate nanoseconds to microseconds (6 digits max)
+                                # AL may return 9-digit precision: 2026-03-25T20:33:29.646056452Z
+                                # Python/stix2 only supports 6 digits: 2026-03-25T20:33:29.646056Z
+                                parts = ts.split(".")
+                                if len(parts) == 2:
+                                    frac = parts[1].rstrip("Z")
+                                    if len(frac) > 6:
+                                        frac = frac[:6]
+                                    ts = f"{parts[0]}.{frac}Z"
                             analysis_started = ts
                     except Exception:
                         pass
@@ -973,6 +983,14 @@ class AssemblyLineImportConnector:
                         if isinstance(ts, str):
                             if "." not in ts:
                                 ts = ts.replace("Z", ".000Z")
+                            else:
+                                # Truncate nanoseconds to microseconds (6 digits max)
+                                parts = ts.split(".")
+                                if len(parts) == 2:
+                                    frac = parts[1].rstrip("Z")
+                                    if len(frac) > 6:
+                                        frac = frac[:6]
+                                    ts = f"{parts[0]}.{frac}Z"
                             analysis_ended = ts
                     except Exception:
                         pass
