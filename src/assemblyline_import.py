@@ -151,6 +151,39 @@ class AssemblyLineImportConnector:
         if isinstance(self.create_attack_patterns, str):
             self.create_attack_patterns = self.create_attack_patterns.lower() == 'true'
 
+        # Create unclassified observables (domains/URLs/emails not tagged malicious)
+        self.create_unclassified_observables = get_config_variable(
+            "ASSEMBLYLINE_CREATE_UNCLASSIFIED_OBSERVABLES",
+            ["assemblyline", "create_unclassified_observables"],
+            {}, False, False
+        )
+        if isinstance(self.create_unclassified_observables, str):
+            self.create_unclassified_observables = self.create_unclassified_observables.lower() in ('true', '1', 'yes')
+
+        # Score assigned to unclassified observables (0-100)
+        self.unclassified_score = int(get_config_variable(
+            "ASSEMBLYLINE_UNCLASSIFIED_SCORE",
+            ["assemblyline", "unclassified_score"],
+            {}, False, 20
+        ))
+
+        # Safelist of known legitimate domains
+        self._safelist_domain_patterns = [
+            "microsoft.com", "windowsupdate.com", "windows.net", "msedge.net",
+            "azure.com", "azure.net", "live.com", "office.com", "office365.com",
+            "officeapps.live.com", "sharepoint.com", "onedrive.com", "outlook.com",
+            "microsoftonline.com", "msftconnecttest.com", "msauth.net",
+            "google.com", "googleapis.com", "gstatic.com", "googlevideo.com",
+            "googleusercontent.com", "google-analytics.com", "pki.goog",
+            "digicert.com", "letsencrypt.org", "verisign.com", "globalsign.com",
+            "symantec.com", "entrust.net", "sectigo.com", "usertrust.com",
+            "ocsp.comodoca.com", "crl.comodoca.com",
+            "cloudflare.com", "amazonaws.com", "akamai.net", "akamaized.net",
+            "fastly.net", "edgecastcdn.net", "cloudfront.net",
+            "mozilla.org", "mozilla.com", "firefox.com",
+            "apple.com", "icloud.com", "apple-dns.net",
+        ]
+
         # Initialize AssemblyLine client
         self.al_client = None
         self._init_assemblyline_client()
@@ -427,6 +460,164 @@ class AssemblyLineImportConnector:
         )
 
         return malicious_iocs
+
+    def _is_safelisted_domain(self, value: str) -> bool:
+        """Check if a domain or URL matches the built-in safelist"""
+        domain = value.lower()
+        if "://" in domain:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(domain)
+                domain = parsed.hostname or domain
+            except Exception:
+                pass
+
+        for pattern in self._safelist_domain_patterns:
+            if domain == pattern or domain.endswith("." + pattern):
+                return True
+        return False
+
+    def _extract_unclassified_iocs(self, tags: Dict, malicious_iocs: Dict) -> Dict:
+        """
+        Extract IOCs not classified as malicious/suspicious and not safelisted.
+        Domains, URLs and emails only (no IPs to avoid version string false positives).
+        """
+        unclassified_iocs = {
+            'domains': [],
+            'urls': [],
+            'emails': []
+        }
+
+        if not tags:
+            return unclassified_iocs
+
+        for main_category, category_data in tags.items():
+            if not isinstance(category_data, dict):
+                continue
+
+            for tag_type, tag_list in category_data.items():
+                if not isinstance(tag_list, list):
+                    continue
+
+                for tag_entry in tag_list:
+                    if not isinstance(tag_entry, list) or len(tag_entry) < 2:
+                        continue
+
+                    value = tag_entry[0]
+                    classification = tag_entry[1]
+
+                    if classification in ["malicious", "suspicious"]:
+                        continue
+
+                    is_domain = "domain" in tag_type.lower()
+                    is_url = "uri" in tag_type.lower() or "url" in tag_type.lower()
+                    is_email = "email" in tag_type.lower()
+
+                    if not is_domain and not is_url and not is_email:
+                        continue
+
+                    if is_domain and value in malicious_iocs.get('domains', []):
+                        continue
+                    if is_url and value in malicious_iocs.get('urls', []):
+                        continue
+
+                    if (is_domain or is_url) and self._is_safelisted_domain(value):
+                        continue
+
+                    if is_domain and value not in unclassified_iocs['domains']:
+                        unclassified_iocs['domains'].append(value)
+                    elif is_url and value not in unclassified_iocs['urls']:
+                        unclassified_iocs['urls'].append(value)
+                    elif is_email and value not in unclassified_iocs['emails']:
+                        unclassified_iocs['emails'].append(value)
+
+        self.helper.log_info(
+            f"Extracted unclassified IOCs - Domains: {len(unclassified_iocs['domains'])}, "
+            f"URLs: {len(unclassified_iocs['urls'])}, Emails: {len(unclassified_iocs['emails'])}"
+        )
+
+        return unclassified_iocs
+
+    def _create_unclassified_observables(self, file_id: str, unclassified_iocs: Dict,
+                                          assemblyline_identity: str) -> Dict:
+        """
+        Create simple observables in OpenCTI for unclassified IOCs.
+        No indicators, no malicious label, low confidence score.
+        Links to the StixFile/Artifact with 'related-to' relationship.
+        """
+        created_counts = {
+            'unclassified_domains': 0,
+            'unclassified_urls': 0,
+            'unclassified_emails': 0
+        }
+
+        for domain in unclassified_iocs['domains'][:30]:
+            try:
+                obs = self.helper.api.stix_cyber_observable.create(
+                    observableData={"type": "domain-name", "value": domain},
+                    x_opencti_score=self.unclassified_score,
+                    createdBy=assemblyline_identity
+                )
+                created_counts['unclassified_domains'] += 1
+
+                self.helper.api.stix_cyber_observable.add_label(
+                    id=obs["id"], label="assemblyline-unverified"
+                )
+                self.helper.api.stix_core_relationship.create(
+                    fromId=file_id, toId=obs["id"],
+                    relationship_type="related-to",
+                    description="Domain observed during AssemblyLine analysis (not yet verified as malicious)",
+                    createdBy=assemblyline_identity
+                )
+            except Exception as e:
+                self.helper.log_warning(f"Could not create unclassified domain {domain}: {str(e)}")
+
+        for url in unclassified_iocs['urls'][:30]:
+            try:
+                obs = self.helper.api.stix_cyber_observable.create(
+                    observableData={"type": "url", "value": url},
+                    x_opencti_score=self.unclassified_score,
+                    createdBy=assemblyline_identity
+                )
+                created_counts['unclassified_urls'] += 1
+
+                self.helper.api.stix_cyber_observable.add_label(
+                    id=obs["id"], label="assemblyline-unverified"
+                )
+                self.helper.api.stix_core_relationship.create(
+                    fromId=file_id, toId=obs["id"],
+                    relationship_type="related-to",
+                    description="URL observed during AssemblyLine analysis (not yet verified as malicious)",
+                    createdBy=assemblyline_identity
+                )
+            except Exception as e:
+                self.helper.log_warning(f"Could not create unclassified URL {url}: {str(e)}")
+
+        for email in unclassified_iocs.get('emails', [])[:30]:
+            try:
+                obs = self.helper.api.stix_cyber_observable.create(
+                    observableData={"type": "email-addr", "value": email},
+                    x_opencti_score=self.unclassified_score,
+                    createdBy=assemblyline_identity
+                )
+                created_counts['unclassified_emails'] += 1
+
+                self.helper.api.stix_cyber_observable.add_label(
+                    id=obs["id"], label="assemblyline-unverified"
+                )
+                self.helper.api.stix_core_relationship.create(
+                    fromId=file_id, toId=obs["id"],
+                    relationship_type="related-to",
+                    description="Email observed during AssemblyLine analysis (not yet verified as malicious)",
+                    createdBy=assemblyline_identity
+                )
+            except Exception as e:
+                self.helper.log_warning(f"Could not create unclassified email {email}: {str(e)}")
+
+        total = sum(created_counts.values())
+        self.helper.log_info(f"Created {total} unclassified observables (domains: {created_counts['unclassified_domains']}, URLs: {created_counts['unclassified_urls']}, emails: {created_counts['unclassified_emails']})")
+
+        return created_counts
 
     def _extract_attack_techniques(self, attack_matrix: Dict) -> List[Dict]:
         """Extract MITRE ATT&CK techniques from AssemblyLine attack_matrix"""
@@ -1166,11 +1357,23 @@ class AssemblyLineImportConnector:
             # Link existing artifacts
             linked = self._link_existing_artifacts(file_object, detailed)
 
+            # Create unclassified observables if enabled
+            unclassified_stats = {'unclassified_domains': 0, 'unclassified_urls': 0, 'unclassified_emails': 0}
+            if self.create_unclassified_observables:
+                unclassified_iocs = self._extract_unclassified_iocs(tags, malicious_iocs)
+                if unclassified_iocs['domains'] or unclassified_iocs['urls'] or unclassified_iocs.get('emails'):
+                    unclassified_stats = self._create_unclassified_observables(
+                        file_id, unclassified_iocs, self.assemblyline_identity_id
+                    )
+
+            total_unclassified = sum(unclassified_stats.values())
+
             self.helper.log_info(
                 f"Submission {sid} processed: "
                 f"indicators={indicator_stats['indicators_created']}, "
                 f"observables={indicator_stats['observables_created']}, "
-                f"malware={created_malware}, attack={created_attack}, linked={linked}"
+                f"malware={created_malware}, attack={created_attack}, "
+                f"unclassified={total_unclassified}, linked={linked}"
             )
 
             return {
@@ -1182,6 +1385,7 @@ class AssemblyLineImportConnector:
                 "observables_created": indicator_stats['observables_created'],
                 "malware_created": created_malware,
                 "attack_patterns_created": created_attack,
+                "unclassified_created": total_unclassified,
                 "malware_analysis": malware_analysis_id is not None,
                 "linked_artifacts": linked
             }
