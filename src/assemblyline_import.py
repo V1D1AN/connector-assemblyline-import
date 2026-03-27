@@ -167,23 +167,6 @@ class AssemblyLineImportConnector:
             {}, False, 20
         ))
 
-        # Safelist of known legitimate domains
-        self._safelist_domain_patterns = [
-            "microsoft.com", "windowsupdate.com", "windows.net", "msedge.net",
-            "azure.com", "azure.net", "live.com", "office.com", "office365.com",
-            "officeapps.live.com", "sharepoint.com", "onedrive.com", "outlook.com",
-            "microsoftonline.com", "msftconnecttest.com", "msauth.net",
-            "google.com", "googleapis.com", "gstatic.com", "googlevideo.com",
-            "googleusercontent.com", "google-analytics.com", "pki.goog",
-            "digicert.com", "letsencrypt.org", "verisign.com", "globalsign.com",
-            "symantec.com", "entrust.net", "sectigo.com", "usertrust.com",
-            "ocsp.comodoca.com", "crl.comodoca.com",
-            "cloudflare.com", "amazonaws.com", "akamai.net", "akamaized.net",
-            "fastly.net", "edgecastcdn.net", "cloudfront.net",
-            "mozilla.org", "mozilla.com", "firefox.com",
-            "apple.com", "icloud.com", "apple-dns.net",
-        ]
-
         # Initialize AssemblyLine client
         self.al_client = None
         self._init_assemblyline_client()
@@ -461,26 +444,11 @@ class AssemblyLineImportConnector:
 
         return malicious_iocs
 
-    def _is_safelisted_domain(self, value: str) -> bool:
-        """Check if a domain or URL matches the built-in safelist"""
-        domain = value.lower()
-        if "://" in domain:
-            try:
-                from urllib.parse import urlparse
-                parsed = urlparse(domain)
-                domain = parsed.hostname or domain
-            except Exception:
-                pass
-
-        for pattern in self._safelist_domain_patterns:
-            if domain == pattern or domain.endswith("." + pattern):
-                return True
-        return False
-
     def _extract_unclassified_iocs(self, tags: Dict, malicious_iocs: Dict) -> Dict:
         """
-        Extract IOCs not classified as malicious/suspicious and not safelisted.
+        Extract IOCs not classified as malicious/suspicious by AssemblyLine.
         Domains, URLs and emails only (no IPs to avoid version string false positives).
+        Filtering of legitimate domains is delegated to AssemblyLine safelists and OpenCTI exclusion lists.
         """
         unclassified_iocs = {
             'domains': [],
@@ -519,9 +487,6 @@ class AssemblyLineImportConnector:
                     if is_domain and value in malicious_iocs.get('domains', []):
                         continue
                     if is_url and value in malicious_iocs.get('urls', []):
-                        continue
-
-                    if (is_domain or is_url) and self._is_safelisted_domain(value):
                         continue
 
                     if is_domain and value not in unclassified_iocs['domains']:
