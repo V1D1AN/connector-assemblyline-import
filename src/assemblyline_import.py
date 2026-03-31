@@ -69,7 +69,19 @@ class AssemblyLineImportConnector:
             {}, 240, True
         )
 
-        # Lookback days configuration
+        # Lookback configuration
+        # LOOKBACK_HOURS takes priority over LOOKBACK_DAYS if set
+        self.lookback_hours = get_config_variable(
+            "ASSEMBLYLINE_LOOKBACK_HOURS",
+            ["assemblyline_import", "lookback_hours"],
+            {}, False, None
+        )
+        if self.lookback_hours is not None:
+            try:
+                self.lookback_hours = float(self.lookback_hours)
+            except (ValueError, TypeError):
+                self.lookback_hours = None
+
         self.lookback_days = get_config_variable(
             "ASSEMBLYLINE_LOOKBACK_DAYS",
             ["assemblyline_import", "lookback_days"],
@@ -1385,7 +1397,12 @@ class AssemblyLineImportConnector:
             self.helper.log_info("Starting AssemblyLine Enhanced Import...")
 
             end_time = datetime.now(timezone.utc)
-            start_time = end_time - timedelta(days=self.lookback_days)
+            if self.lookback_hours is not None:
+                start_time = end_time - timedelta(hours=self.lookback_hours)
+                self.helper.log_info(f"Searching submissions from last {self.lookback_hours} hour(s)")
+            else:
+                start_time = end_time - timedelta(days=self.lookback_days)
+                self.helper.log_info(f"Searching submissions from last {self.lookback_days} day(s)")
 
             self.helper.log_info(f"Searching submissions from {start_time} to {end_time}")
 
