@@ -179,6 +179,15 @@ class AssemblyLineImportConnector:
             {}, False, 20
         ))
 
+        # Exclude safelisted tags from import (tags marked as safelisted by AL4)
+        self.exclude_safelisted = get_config_variable(
+            "ASSEMBLYLINE_EXCLUDE_SAFELISTED",
+            ["assemblyline", "exclude_safelisted"],
+            {}, True, True
+        )
+        if isinstance(self.exclude_safelisted, str):
+            self.exclude_safelisted = self.exclude_safelisted.lower() in ('true', '1', 'yes')
+
         # Initialize AssemblyLine client
         self.al_client = None
         self._init_assemblyline_client()
@@ -420,6 +429,15 @@ class AssemblyLineImportConnector:
 
                     value = tag_entry[0]
                     classification = tag_entry[1]
+                    # AL4 submission summary returns: [value, verdict, is_safelisted, classification_level]
+                    is_safelisted = tag_entry[2] if len(tag_entry) > 2 else False
+
+                    # Skip safelisted tags if configured
+                    if self.exclude_safelisted and is_safelisted:
+                        self.helper.log_debug(
+                            f"Skipping safelisted tag: {tag_type}={value}"
+                        )
+                        continue
 
                     should_include = classification in classification_types
 
@@ -485,8 +503,17 @@ class AssemblyLineImportConnector:
 
                     value = tag_entry[0]
                     classification = tag_entry[1]
+                    # AL4 submission summary returns: [value, verdict, is_safelisted, classification_level]
+                    is_safelisted = tag_entry[2] if len(tag_entry) > 2 else False
 
                     if classification in ["malicious", "suspicious"]:
+                        continue
+
+                    # Skip safelisted tags if configured
+                    if self.exclude_safelisted and is_safelisted:
+                        self.helper.log_debug(
+                            f"Skipping safelisted unclassified tag: {tag_type}={value}"
+                        )
                         continue
 
                     is_domain = "domain" in tag_type.lower()
@@ -515,31 +542,6 @@ class AssemblyLineImportConnector:
 
         return unclassified_iocs
 
-    def _has_verdict_label(self, observable_id: str) -> bool:
-        """
-        Check if an observable already has a verdict label (legitimate or malicious).
-        If so, we should NOT overwrite it with 'assemblyline-unverified'.
-        """
-        try:
-            observable = self.helper.api.stix_cyber_observable.read(id=observable_id)
-            if observable and "objectLabel" in observable:
-                existing_labels = [
-                    lbl["value"].lower()
-                    for lbl in observable["objectLabel"]
-                    if isinstance(lbl, dict) and "value" in lbl
-                ]
-                verdict_labels = {"legitimate", "malicious"}
-                if verdict_labels & set(existing_labels):
-                    self.helper.log_info(
-                        f"Observable {observable_id} already has verdict label "
-                        f"({', '.join(verdict_labels & set(existing_labels))}), "
-                        f"skipping assemblyline-unverified"
-                    )
-                    return True
-        except Exception as e:
-            self.helper.log_warning(f"Could not check labels for {observable_id}: {str(e)}")
-        return False
-
     def _create_unclassified_observables(self, file_id: str, unclassified_iocs: Dict,
                                           assemblyline_identity: str) -> Dict:
         """
@@ -562,10 +564,9 @@ class AssemblyLineImportConnector:
                 )
                 created_counts['unclassified_domains'] += 1
 
-                if not self._has_verdict_label(obs["id"]):
-                    self.helper.api.stix_cyber_observable.add_label(
-                        id=obs["id"], label_name="assemblyline-unverified"
-                    )
+                self.helper.api.stix_cyber_observable.add_label(
+                    id=obs["id"], label_name="assemblyline-unverified"
+                )
                 self.helper.api.stix_core_relationship.create(
                     fromId=file_id, toId=obs["id"],
                     relationship_type="related-to",
@@ -584,10 +585,9 @@ class AssemblyLineImportConnector:
                 )
                 created_counts['unclassified_urls'] += 1
 
-                if not self._has_verdict_label(obs["id"]):
-                    self.helper.api.stix_cyber_observable.add_label(
-                        id=obs["id"], label_name="assemblyline-unverified"
-                    )
+                self.helper.api.stix_cyber_observable.add_label(
+                    id=obs["id"], label_name="assemblyline-unverified"
+                )
                 self.helper.api.stix_core_relationship.create(
                     fromId=file_id, toId=obs["id"],
                     relationship_type="related-to",
@@ -606,10 +606,9 @@ class AssemblyLineImportConnector:
                 )
                 created_counts['unclassified_emails'] += 1
 
-                if not self._has_verdict_label(obs["id"]):
-                    self.helper.api.stix_cyber_observable.add_label(
-                        id=obs["id"], label_name="assemblyline-unverified"
-                    )
+                self.helper.api.stix_cyber_observable.add_label(
+                    id=obs["id"], label_name="assemblyline-unverified"
+                )
                 self.helper.api.stix_core_relationship.create(
                     fromId=file_id, toId=obs["id"],
                     relationship_type="related-to",

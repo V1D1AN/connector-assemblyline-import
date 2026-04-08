@@ -37,3 +37,4 @@ assemblyline:
   create_attack_patterns: true  # Create MITRE ATT&CK patterns
   create_as_artifact: true  # Create files as Artifacts (false = StixFile)
   create_hash_observables: true  # Create hash observables
+  exclude_safelisted: true  # Exclude tags marked as safelisted by AL4 from import
