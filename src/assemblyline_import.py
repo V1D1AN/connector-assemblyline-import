@@ -98,18 +98,31 @@ class AssemblyLineImportConnector:
             self.tlp_level = get_config_variable(
                 "ASSEMBLYLINE_TLP_LEVEL",
                 ["assemblyline_import", "tlp_level"],
-                {}, False, "TLP:WHITE"
+                {}, False, "TLP:AMBER"
             )
             if not self.tlp_level:
-                self.tlp_level = "TLP:WHITE"
+                self.tlp_level = "TLP:AMBER"
 
-            valid_tlp_levels = ["TLP:RED", "TLP:AMBER", "TLP:GREEN", "TLP:WHITE", "TLP:CLEAR"]
-            if str(self.tlp_level).upper() not in valid_tlp_levels:
-                self.tlp_level = "TLP:WHITE"
+            # Normalise: accept short forms and the AMBER+STRICT extension
+            tlp_in = str(self.tlp_level).strip().upper()
+            if tlp_in in ("CLEAR", "WHITE", "GREEN", "AMBER", "RED"):
+                tlp_in = f"TLP:{tlp_in}"
+            if tlp_in == "AMBER+STRICT":
+                tlp_in = "TLP:AMBER+STRICT"
+
+            valid_tlp_levels = [
+                "TLP:RED", "TLP:AMBER", "TLP:AMBER+STRICT",
+                "TLP:GREEN", "TLP:WHITE", "TLP:CLEAR",
+            ]
+            if tlp_in not in valid_tlp_levels:
+                self.helper.log_warning(
+                    f"Invalid TLP level '{self.tlp_level}', falling back to TLP:AMBER"
+                )
+                self.tlp_level = "TLP:AMBER"
             else:
-                self.tlp_level = str(self.tlp_level).upper()
+                self.tlp_level = tlp_in
         except Exception as e:
-            self.tlp_level = "TLP:WHITE"
+            self.tlp_level = "TLP:AMBER"
 
         # Feature flags
         self.create_network_indicators = get_config_variable(
@@ -196,6 +209,51 @@ class AssemblyLineImportConnector:
         self.assemblyline_identity_id = None
         self.assemblyline_identity_standard_id = None
 
+        # Auto-inject the configured TLP marking into ALL helper.api.X.create() calls
+        # so the marking is applied uniformly even on call sites that build kwargs
+        # ad hoc (relationships, identity, observables) and don't pass objectMarking.
+        self._wrap_api_create_methods()
+
+    def _wrap_api_create_methods(self):
+        """Wrap helper.api.X.create methods so they auto-inject objectMarking.
+
+        Targets all entity types this connector creates. The wrapper:
+        - resolves the TLP marking ID lazily on each call (so AMBER+STRICT resolution
+          happens after the connector is fully initialised)
+        - preserves any objectMarking already passed by the caller (no overwrite, no dup)
+        - is idempotent: re-wrapping the same method is detected and skipped
+        """
+        targets = [
+            "indicator", "malware", "attack_pattern", "note",
+            "stix_cyber_observable", "stix_core_relationship",
+        ]
+        connector = self  # closure ref
+
+        for attr in targets:
+            try:
+                module = getattr(self.helper.api, attr, None)
+                if module is None or not hasattr(module, "create"):
+                    continue
+                if getattr(module.create, "_al_marking_wrapped", False):
+                    continue  # already wrapped (idempotency)
+                original = module.create
+
+                def make_wrapper(orig):
+                    def wrapped(*args, **kwargs):
+                        marking_id = connector._get_tlp_marking()
+                        if marking_id:
+                            existing = kwargs.get("objectMarking") or []
+                            if marking_id not in existing:
+                                kwargs["objectMarking"] = list(existing) + [marking_id]
+                        return orig(*args, **kwargs)
+                    wrapped._al_marking_wrapped = True
+                    return wrapped
+
+                module.create = make_wrapper(original)
+                self.helper.log_info(f"Auto-marking enabled for helper.api.{attr}.create")
+            except Exception as e:
+                self.helper.log_warning(f"Could not wrap helper.api.{attr}.create: {e}")
+
     def _init_assemblyline_client(self):
         """Initialize AssemblyLine client with authentication"""
         try:
@@ -216,15 +274,52 @@ class AssemblyLineImportConnector:
             raise
 
     def _get_tlp_marking(self) -> str:
-        """Get the TLP marking ID for the configured TLP level"""
+        """Get the TLP marking ID for the configured TLP level.
+
+        Standard TLP levels use OASIS STIX 2.1 IDs.
+        AMBER+STRICT (OpenCTI extension) is resolved via the OpenCTI API and cached.
+        """
+        # Standard OASIS STIX 2.1 marking IDs
         tlp_mappings = {
             "TLP:RED": "marking-definition--5e57c739-391a-4eb3-b6be-7d15ca92d5ed",
             "TLP:AMBER": "marking-definition--f88d31f6-486f-44da-b317-01333bde0b82",
             "TLP:GREEN": "marking-definition--34098fce-860f-48ae-8e50-ebd3cc5e41da",
             "TLP:WHITE": "marking-definition--613f2e26-407d-48c7-9eca-b8e91df99dc9",
-            "TLP:CLEAR": "marking-definition--613f2e26-407d-48c7-9eca-b8e91df99dc9"
+            "TLP:CLEAR": "marking-definition--613f2e26-407d-48c7-9eca-b8e91df99dc9",
         }
-        return tlp_mappings.get(self.tlp_level, tlp_mappings["TLP:WHITE"])
+        if self.tlp_level in tlp_mappings:
+            return tlp_mappings[self.tlp_level]
+
+        # TLP:AMBER+STRICT — resolve via OpenCTI API (cached on first call)
+        if self.tlp_level == "TLP:AMBER+STRICT":
+            cached = getattr(self, "_amber_strict_id", None)
+            if cached:
+                return cached
+            try:
+                marking = self.helper.api.marking_definition.read(
+                    filters={
+                        "mode": "and",
+                        "filters": [
+                            {"key": "definition_type", "values": ["TLP"]},
+                            {"key": "definition", "values": ["AMBER+STRICT"]},
+                        ],
+                        "filterGroups": [],
+                    }
+                )
+                if marking and marking.get("standard_id"):
+                    self._amber_strict_id = marking["standard_id"]
+                    return self._amber_strict_id
+                self.helper.log_warning(
+                    "TLP:AMBER+STRICT not found in OpenCTI — falling back to TLP:AMBER"
+                )
+            except Exception as e:
+                self.helper.log_warning(
+                    f"Could not resolve TLP:AMBER+STRICT: {e} — falling back to TLP:AMBER"
+                )
+            return tlp_mappings["TLP:AMBER"]
+
+        # Should not happen due to validation in __init__, but be defensive
+        return tlp_mappings["TLP:AMBER"]
 
     def _get_or_create_assemblyline_identity(self) -> Optional[str]:
         """Get or create AssemblyLine identity as the author"""

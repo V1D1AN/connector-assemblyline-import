@@ -25,7 +25,7 @@ assemblyline_import:
   # Import settings
   interval: 240  # Interval between imports in seconds
   lookback_days: 1  # How many days back to search for submissions
-  tlp_level: 'TLP:AMBER'  # TLP marking: TLP:RED, TLP:AMBER, TLP:GREEN, TLP:WHITE, TLP:CLEAR
+  tlp_level: 'TLP:AMBER'  # TLP marking: TLP:RED, TLP:AMBER, TLP:AMBER+STRICT, TLP:GREEN, TLP:WHITE, TLP:CLEAR
   include_suspicious: false  # Include suspicious IOCs in addition to malicious
 
 assemblyline:
